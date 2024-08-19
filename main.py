@@ -1,18 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from datetime import datetime, timedelta
-from typing import Optional
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env
 load_dotenv()
 
-# FastAPI app instance
 app = FastAPI()
 
 # Database connection details
@@ -26,139 +23,104 @@ def get_db_connection():
         print(f"Error connecting to the database: {e}")
         return None
 
-# Secret key to encode the JWT
-SECRET_KEY = "your_secret_key"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# Models
+class PotCreate(BaseModel):
+    name: str
+    location: Optional[str] = None
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+class SensorDataCreate(BaseModel):
+    pot_id: int
+    moisture: float
+    light: float
+    temperature: float
 
-# OAuth2 scheme
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+class Pot(BaseModel):
+    id: int
+    name: str
+    location: Optional[str]
+    created_at: datetime
 
-# Mocked user database - In a real application, you should fetch this from your database
-fake_users_db = {
-    "user@example.com": {
-        "username": "user@example.com",
-        "full_name": "John Doe",
-        "email": "user@example.com",
-        "hashed_password": pwd_context.hash("password123"),
-        "disabled": False,
-    }
-}
+class SensorData(BaseModel):
+    id: int
+    pot_id: int
+    moisture: float
+    light: float
+    temperature: float
+    timestamp: datetime
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return user_dict
-    return None
-
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
-    if not user:
-        return False
-    if not verify_password(password, user["hashed_password"]):
-        return False
-    return user
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-@app.post("/token", response_model=dict)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.get("/users/me", response_model=dict)
-async def read_users_me(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        user = get_user(fake_users_db, username=username)
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
-
-@app.get("/")
-async def read_root():
-    return {"message": "Hello World"}
-
-@app.get("/data")
-async def read_data(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        # Retrieve user data from database or mock data
-        user = get_user(fake_users_db, username=username)
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+# Create a new GIA Pot
+@app.post("/pots/", response_model=Pot)
+def create_pot(pot: PotCreate):
     conn = get_db_connection()
     if conn is None:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM your_table_name")  # Replace with your table name
-            data = cursor.fetchall()
-        return {"data": data}
+            cursor.execute(
+                """
+                INSERT INTO pots (name, location, created_at)
+                VALUES (%s, %s, %s)
+                RETURNING id, name, location, created_at
+                """,
+                (pot.name, pot.location, datetime.utcnow())
+            )
+            new_pot = cursor.fetchone()
+            conn.commit()
+        return new_pot
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database query failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
     finally:
         conn.close()
+
+# Receive and store sensor data
+@app.post("/sensor-data/", response_model=SensorData)
+def create_sensor_data(sensor_data: SensorDataCreate):
+    conn = get_db_connection()
+    if conn is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO sensor_data (pot_id, moisture, light, temperature, timestamp)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, pot_id, moisture, light, temperature, timestamp
+                """,
+                (sensor_data.pot_id, sensor_data.moisture, sensor_data.light, sensor_data.temperature, datetime.utcnow())
+            )
+            new_sensor_data = cursor.fetchone()
+            conn.commit()
+        return new_sensor_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+    finally:
+        conn.close()
+
+# Get all sensor data for a specific pot
+@app.get("/pots/{pot_id}/sensor-data/", response_model=List[SensorData])
+def get_sensor_data(pot_id: int):
+    conn = get_db_connection()
+    if conn is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM sensor_data WHERE pot_id = %s ORDER BY timestamp DESC
+                """,
+                (pot_id,)
+            )
+            sensor_data = cursor.fetchall()
+        return sensor_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+    finally:
+        conn.close()
+
+# Health check endpoint
+@app.get("/")
+def read_root():
+    return {"message": "GIA Smart Pot API is running"}
