@@ -2,5 +2,5 @@ fastapi
 uvicorn
 psycopg2-binary
 python-dotenv
-passlib[bcrypt]   # For password hashing
-pyjwt[crypto]     # For JWT token creation and validation
+passlib[bcrypt]
+python-jose[cryptography]
